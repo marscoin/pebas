@@ -4,10 +4,10 @@
 //! @author Kenneth Shortrede https://github.com/kshortrede
 //! @author Sebastian Fabara https://github.com/sfabara
 
- 
+
 import { createRequire } from "module";
 import fetch from "node-fetch";
-import { MarscoinMainnet } from "./networks.js";
+import { Marscoin} from "./networks.js";
 
 //Allow both imports and requires
 const require = createRequire(import.meta.url);
@@ -20,7 +20,6 @@ const cookieParser = require("cookie-parser");
 const cors = require("cors");
 const util = require("util");
 const { request, response } = require("express");
-const XMLHttpRequest = require("xhr2");
 
 //Security
 const bcrypt = require("bcrypt");
@@ -30,14 +29,8 @@ const crypto = require("crypto");
 
 //Bitcoin
 const bitcoinController = require("bitcoinjs-lib");
-const { ECPair } = require("ecpair");
-const bip32 = require("bip32");
-const bip39 = require("bip39");
 // const bip44 = require("bip44");
-const bip84 = require("bip84");
-const reverse = require("buffer-reverse");
 
-const satoshiPerBTC = 100000000;
 const coinSelect = require("coinselect");
 const ElectrumClient = require("electrum-client");
 const peers = require("electrum-host-parse")
@@ -58,11 +51,22 @@ app.listen(3001, () => {
 //Electrum Clients Connection
 const marsecl = new ElectrumClient("50002", "147.182.177.23", "ssl"); //147.182.177.23
 
-(() => {
-  marsecl.connect();
-})();
+const mainMARS = async () => {
+  try{
+    console.log("Running MARS electrum...")
+    await marsecl.connect()
+  }
+  catch(e){
+    throw e
+  }
+}
 
-const delay = (ms) => new Promise((res) => setTimeout(res, ms));
+mainMARS()
+
+// (() => {
+//   marsecl.connect();
+// })();
+
 
 setInterval(async function () {
   try {
@@ -79,31 +83,6 @@ setInterval(async function () {
 // ==========================================================================================================================
 
 // Desc: Adding MARSCOIN Electrum X functionality
-
-// MARS Electrum config
-// const marsecl = new ElectrumClient("50002", "147.182.177.23", "ssl");  //147.182.177.23
-
-// const mainMARS = async () => {
-//   console.log("Running MARS electrum...")
-//   await marsecl.connect()
-// }
-
-// mainMARS()
-
-const Marscoin = {
-  mainnet: {
-    messagePrefix: "\x19Marscoin Signed Message:\n",
-    bech32: "M",
-    bip44: 2,
-    bip32: {
-      public: 0x043587cf,
-      private: 0x04358394,
-    },
-    pubKeyHash: 0x32,
-    scriptHash: 0x32,
-    wif: 0x80,
-  },
-};
 
 //    Parameters:
 //    SenderAddress
@@ -128,16 +107,13 @@ app.get("/api/mars/utxo/", async (req, res) => {
     return;
   }
 
-  // console.log("sender_address: ", sender_address)
-  // console.log("receiver_address: ",receiver_address)
-  // console.log("amount: ",amount)
 
   try {
 
     const list_unspent = await marsGetUtxosByAddress(sender_address);
 
     const rawtx = await getTxHash(list_unspent, amount, receiver_address);
-    res.send("shoot");
+    res.send(rawtx);
 
     return rawtx;
   } catch (error) {
@@ -194,7 +170,6 @@ const marsGetUtxosByAddress = async (sender_address) => {
 const getTxHash = async (list_unspent, amount, receiver_address) => {
   // error handler
   if (!marsecl) throw new Error("Electrum client is not connected...");
-  console.log("Amount 1: ", amount);
   amount = Math.round(marsToZubrins(amount));
 
   const targets = [
@@ -217,7 +192,6 @@ const getTxHash = async (list_unspent, amount, receiver_address) => {
       value: utxo.value,
       rawTx: rawtx,
       nonWitnessUtxo: Buffer.from(rawtx, "hex"),
-      hash: utxo.hash,
       index: utxo.tx_pos,
     };
 
@@ -237,7 +211,6 @@ const getTxHash = async (list_unspent, amount, receiver_address) => {
     outputs: outputs,
   };
   // throw in tx id to get raw tx
-  //const raw = await marsecl.blockchainTransaction_get(tx)
 
   return result;
 };
