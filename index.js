@@ -7,7 +7,7 @@
 
 import { createRequire } from "module";
 import fetch from "node-fetch";
-import { Marscoin} from "./networks.js";
+import { Marscoin } from "./networks.js";
 
 //Allow both imports and requires
 const require = createRequire(import.meta.url);
@@ -52,11 +52,11 @@ app.listen(3001, () => {
 const marsecl = new ElectrumClient("50002", "147.182.177.23", "ssl"); //147.182.177.23
 
 const mainMARS = async () => {
-  try{
+  try {
     console.log("Running MARS electrum...")
     await marsecl.connect()
   }
-  catch(e){
+  catch (e) {
     throw e
   }
 }
@@ -113,6 +113,8 @@ app.get("/api/mars/utxo/", async (req, res) => {
     const list_unspent = await marsGetUtxosByAddress(sender_address);
 
     const rawtx = await getTxHash(list_unspent, amount, receiver_address);
+
+    console.log(rawtx)
     res.send(rawtx);
 
     return rawtx;
@@ -197,11 +199,11 @@ const getTxHash = async (list_unspent, amount, receiver_address) => {
 
     formattedUtxos.push(prop);
   }
-  console.log("Amount: ", amount);
-  console.log("Format UTXO: ", formattedUtxos);
+  //console.log("Amount: ", amount);
+  //console.log("Format UTXO: ", formattedUtxos);
 
   let { inputs, outputs, fee } = coinSelect(formattedUtxos, targets, fee_rate);
-  console.log(inputs, "\n\n", outputs);
+  //console.log(inputs, "\n\n", outputs);
 
   // .inputs and .outputs will be undefined if no solution was found
   if (!inputs || !outputs) return "Empty";
@@ -209,6 +211,7 @@ const getTxHash = async (list_unspent, amount, receiver_address) => {
   const result = {
     inputs: inputs,
     outputs: outputs,
+    fee: fee
   };
   // throw in tx id to get raw tx
 
