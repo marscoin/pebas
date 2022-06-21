@@ -39,7 +39,7 @@ const peers = require("electrum-host-parse")
 const getRandomPeer = () => peers[(peers.length * Math.random()) | 0];
 
 //app.use(bodyParser.urlencoded({extended: true}));
-app.use(cors({ origin: true, credentials: true }));
+app.use(cors({ origin: "*"}));
 app.use(express.json());
 app.use(cookieParser());
 
@@ -127,10 +127,10 @@ app.get("/api/mars/utxo/", async (req, res) => {
 //    txhash
 //
 // Takes in txhash and broadcasts transaction
-app.get("/api/mars/broadcast/", async (req, res) => {
-  const txhash = req.query.txhash;
-
+app.all("/api/mars/broadcast/", async (req, res) => {
+  let txhash = req.param("txhash");
   if (!txhash) {
+    console.log(req.param)
     const err = new Error("Required query params missing");
     err.status = 400;
     res.send("Required: TXHASH parameter missing");
@@ -150,6 +150,7 @@ app.get("/api/mars/broadcast/", async (req, res) => {
 
   return;
 });
+
 
 // =====================================================================
 // =====================================================================
@@ -180,7 +181,7 @@ const getTxHash = async (list_unspent, amount, receiver_address) => {
       value: amount,
     },
   ];
-  const fee_rate = 55;
+  const fee_rate = 1550;
 
   // loop through utxo's and format
   let formattedUtxos = [];
