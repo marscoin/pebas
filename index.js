@@ -151,6 +151,29 @@ app.all("/api/mars/broadcast/", async (req, res) => {
   return;
 });
 
+app.get("/api/mars/txdetails/", async (req, res) => {
+  let txid = req.query.txid;
+  if (!txid) {
+    console.log(req.query)
+    const err = new Error("Required query params missing");
+    err.status = 400;
+    res.send("Required: TXID parameter missing");
+    console.log("Required: TXID parameter missing");
+    return;
+  }
+
+  try {
+    const txdetails = await checkDetails(txid);
+    console.log(txdetails);
+    const result = {txid: txid, confirmations: txdetails.confirmations, blocktime: txdetails.blocktime}
+    console.log(result);
+    res.send(result);
+  } catch (error) {
+    console.error(error);
+  }
+
+  return;
+});
 
 // =====================================================================
 // =====================================================================
@@ -220,7 +243,7 @@ const getTxHash = async (list_unspent, amount, receiver_address) => {
 };
 
 const getRawTx = async (tx) => {
-  const raw = await marsecl.blockchainTransaction_get(tx);
+  const raw = await marsecl.blockchainTransaction_get(tx, false);
 
   return raw;
 };
@@ -231,6 +254,17 @@ const broadcastTx = async (hex) => {
   const broadcast = await marsecl.blockchainTransaction_broadcast(hex);
 
   return broadcast;
+};
+
+const checkDetails = async (hex) => {
+
+  if (!marsecl) throw new Error("Electrum client is not connected...");
+
+  const confirmations = await marsecl.blockchainTransaction_get(hex, true);
+
+  return confirmations;
+
+
 };
 
 // =====================================================================
