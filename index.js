@@ -39,7 +39,7 @@ const peers = require("electrum-host-parse")
 const getRandomPeer = () => peers[(peers.length * Math.random()) | 0];
 
 //app.use(bodyParser.urlencoded({extended: true}));
-app.use(cors({ origin: "*"}));
+app.use(cors({ origin: "*", methods: ['GET','POST','DELETE','UPDATE','PUT','PATCH']}));
 app.use(express.json());
 app.use(cookieParser());
 
@@ -54,6 +54,7 @@ const marsecl = new ElectrumClient("50002", "147.182.177.23", "ssl"); //147.182.
 const mainMARS = async () => {
   try {
     console.log("Running MARS electrum...")
+	   
     await marsecl.connect()
   }
   catch (e) {
