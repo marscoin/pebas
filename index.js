@@ -47,26 +47,51 @@ app.listen(3001, () => {
   console.log("Running on port 3001 🚀");
 });
 
+// Electrum Clients Connection
+const marsecl = new ElectrumClient("50002", "147.182.177.23", "ssl");
 
-//Electrum Clients Connection
-const marsecl = new ElectrumClient("50002", "147.182.177.23", "ssl"); //147.182.177.23
+async function connectElectrumClient(client, maxRetries = 5, delay = 1000) {
+  let retries = 0;
+
+  async function attemptConnection() {
+    try {
+      await client.connect();
+      console.log("Successfully connected to Mars Electrum server.");
+
+      client.on('close', () => {
+        console.log("Connection to Mars Electrum server lost. Attempting to reconnect...");
+        setTimeout(reconnect, delay);
+      });
+    } catch (error) {
+      if (retries < maxRetries) {
+        retries++;
+        console.log(`Connection failed, retrying... (${retries}/${maxRetries})`);
+        setTimeout(attemptConnection, retries * delay);
+      } else {
+        console.log("Failed to connect to Mars Electrum server after several attempts.");
+        throw error;
+      }
+    }
+  }
+
+  async function reconnect() {
+    retries = 0; // Reset retry counter for a fresh start
+    attemptConnection();
+  }
+
+  await attemptConnection();
+}
 
 const mainMARS = async () => {
   try {
-    console.log("Running MARS electrum...")
-	   
-    await marsecl.connect()
+    await connectElectrumClient(marsecl);
+  } catch (e) {
+    console.error("Error connecting to MARS electrum:", e);
   }
-  catch (e) {
-    throw e
-  }
-}
+};
 
-mainMARS()
+mainMARS();
 
-// (() => {
-//   marsecl.connect();
-// })();
 
 
 setInterval(async function () {
@@ -79,9 +104,6 @@ setInterval(async function () {
 }, 5000);
 
 
-// ==========================================================================================================================
-// ==========================================================================================================================
-// ==========================================================================================================================
 
 // Desc: Adding MARSCOIN Electrum X functionality
 
