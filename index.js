@@ -176,19 +176,35 @@ app.get("/api/mars/txdetails/", async (req, res) => {
   return;
 });
 
+app.get("/api/mars/balance/", async (req, res) => {
+  const address = req.query.address;
+
+  if (!address) {
+    return res.status(400).send("Required: ADDRESS parameter is missing");
+  }
+
+  try {
+    const balance = await getBalanceByAddress(address);
+    res.json({ address: address, balance: balance });
+  } catch (error) {
+    console.error(error);
+    res.status(500).send("Internal Server Error");
+  }
+});
+
 // =====================================================================
 // =====================================================================
 // =========================== Core Functions ==========================
 
 // Batch get UTXO List given address
-const marsGetUtxosByAddress = async (sender_address) => {
-  //const batchsize = batchsize || 100;
+const marsGetUtxosByAddress = async (address) => {
   if (!marsecl) throw new Error("Electrum client is not connected...");
 
-  console.log("Grabbing list unspent...");
-  const scriptHash = adddressToScriptHash(sender_address);
+  console.log("Grabbing list unspent for address:", address);
+  const scriptHash = adddressToScriptHash(address);
 
   let list_unspent = await marsecl.blockchainScripthash_listunspent(scriptHash);
+  console.log("List unspent for", address, ":", list_unspent);
 
   return list_unspent;
 };
@@ -266,6 +282,12 @@ const checkDetails = async (hex) => {
   return confirmations;
 
 
+};
+
+const getBalanceByAddress = async (address) => {
+  const utxos = await marsGetUtxosByAddress(address);
+  const balance = utxos.reduce((acc, utxo) => acc + utxo.value, 0);
+  return zubrinToMars(balance);
 };
 
 // =====================================================================
