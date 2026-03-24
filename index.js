@@ -33,6 +33,22 @@ const bitcoinController = require("bitcoinjs-lib");
 
 const coinSelect = require("coinselect");
 const ElectrumClient = require("electrum-client");
+
+// HD wallet discovery - use bip32 v4 with tiny-secp256k1 (pure JS, no OpenSSL)
+let bip32HD;
+try {
+  const tinysecp = require("tiny-secp256k1");
+  const { BIP32Factory } = require("bip32");
+  bip32HD = BIP32Factory(tinysecp);
+  // Smoke test
+  const testNode = bip32HD.fromBase58("tpubDDDjG8FYXe3UrKsCJeq5E4KBiEQ4KP8XjGbK79hmKBebFqH8p6Fzyu2zS1XVeXyczZ1Py4nvSAfKRpS2YGGbLvshozR8BqZwukgQdyFtcEM", Marscoin.mainnet);
+  testNode.derive(0).derive(0);
+  console.log("✅ bip32HD initialized and smoke-tested OK");
+} catch(e) {
+  console.error("❌ bip32HD init failed:", e.message);
+  console.error("   HD discovery endpoints will not work");
+  bip32HD = null;
+}
 const peers = require("electrum-host-parse")
   .getDefaultPeers("BitcoinSegwit")
   .filter((v) => v.ssl);
@@ -215,6 +231,166 @@ app.get("/api/mars/balance/", async (req, res) => {
 });
 
 // =====================================================================
+// HD Wallet Discovery - scan BIP44 derivation paths for all balances
+// Takes xpub (extended public key) - no private key needed
+// =====================================================================
+app.get("/api/mars/discover/", async (req, res) => {
+  const xpub = req.query.xpub;
+  const gapLimit = parseInt(req.query.gap_limit) || 20;
+
+  if (!xpub) {
+    return res.status(400).json({ error: "Required: XPUB parameter is missing" });
+  }
+
+  try {
+    console.log("HD Discovery: parsing xpub...");
+    const hdNode = bip32HD.fromBase58(xpub, Marscoin.mainnet);
+    console.log("HD Discovery: xpub parsed OK");
+
+    const discovered = [];
+    let totalBalance = 0;
+    let totalReceived = 0;
+
+    // Scan both chains: 0 = receiving, 1 = change
+    for (let chain = 0; chain <= 1; chain++) {
+      const chainNode = hdNode.derive(chain);
+      let consecutiveEmpty = 0;
+
+      for (let index = 0; consecutiveEmpty < gapLimit; index++) {
+        const childNode = chainNode.derive(index);
+        const address = pubkeyToAddressPure(childNode.publicKey, Marscoin.mainnet.pubKeyHash);
+
+        try {
+          const scriptHash = addressToScriptHashPure(address);
+          console.log(`HD Discovery: checking ${chain}/${index} ${address} hash=${scriptHash.substring(0,8)}...`);
+          const listUnspent = await marsecl.blockchainScripthash_listunspent(scriptHash);
+          const balance = listUnspent.reduce((acc, utxo) => acc + utxo.value, 0);
+          const balanceMars = zubrinToMars(balance);
+
+          // Also check transaction history to detect used-but-empty addresses
+          const history = await marsecl.blockchainScripthash_getHistory(scriptHash);
+
+          if (balance > 0 || history.length > 0) {
+            discovered.push({
+              address,
+              balance: balanceMars,
+              chain: chain === 0 ? "receiving" : "change",
+              index,
+              path: `m/44'/2'/0'/${chain}/${index}`,
+              txCount: history.length,
+              utxoCount: listUnspent.length,
+            });
+            totalBalance += balanceMars;
+            consecutiveEmpty = 0;
+          } else {
+            consecutiveEmpty++;
+          }
+        } catch (addrErr) {
+          console.warn(`Failed to check ${address}:`, addrErr.message);
+          consecutiveEmpty++;
+        }
+      }
+    }
+
+    // Get total received for the primary address
+    if (discovered.length > 0) {
+      try {
+        const primaryScript = adddressToScriptHash(discovered[0].address);
+        const primaryBalance = await marsecl.blockchainScripthash_getBalance(primaryScript);
+        totalReceived = zubrinToMars((primaryBalance.confirmed || 0) + (primaryBalance.unconfirmed || 0));
+      } catch (e) { /* ignore */ }
+    }
+
+    res.json({
+      totalBalance,
+      totalReceived,
+      addressCount: discovered.length,
+      addresses: discovered,
+      gapLimit,
+    });
+
+    console.log(`HD Discovery for ${xpub.substring(0, 20)}...: ${discovered.length} addresses, ${totalBalance} MARS`);
+  } catch (error) {
+    console.error("HD Discovery error:", error);
+    res.status(500).json({ error: "HD discovery failed: " + error.message });
+  }
+});
+
+// =====================================================================
+// Multi-address UTXO - get UTXOs for all HD wallet addresses at once
+// Used for sending from HD wallets with funds spread across addresses
+// =====================================================================
+app.get("/api/mars/utxo-multi/", async (req, res) => {
+  const xpub = req.query.xpub;
+  const receiver_address = req.query.receiver_address;
+  const amount = req.query.amount;
+
+  if (!xpub || !amount) {
+    return res.status(400).json({ error: "Required: XPUB, AMOUNT parameters" });
+  }
+
+  try {
+    const hdNode = bip32HD.fromBase58(xpub, Marscoin.mainnet);
+
+    // First discover all addresses with UTXOs
+    let allUtxos = [];
+    const GAP_LIMIT = 20;
+
+    for (let chain = 0; chain <= 1; chain++) {
+      const chainNode = hdNode.derive(chain);
+      let consecutiveEmpty = 0;
+
+      for (let index = 0; consecutiveEmpty < GAP_LIMIT; index++) {
+        const childNode = chainNode.derive(index);
+        const address = pubkeyToAddressPure(childNode.publicKey, Marscoin.mainnet.pubKeyHash);
+
+        try {
+          const scriptHash = addressToScriptHashPure(address);
+          const listUnspent = await marsecl.blockchainScripthash_listunspent(scriptHash);
+
+          if (listUnspent.length > 0) {
+            for (const utxo of listUnspent) {
+              const rawtx = await getRawTx(utxo.tx_hash);
+              allUtxos.push({
+                txId: utxo.tx_hash,
+                vout: utxo.tx_pos,
+                value: utxo.value,
+                rawTx: rawtx,
+                nonWitnessUtxo: Buffer.from(rawtx, "hex"),
+                index: utxo.tx_pos,
+                address,
+                derivationPath: { chain, index },
+              });
+            }
+            consecutiveEmpty = 0;
+          } else {
+            const history = await marsecl.blockchainScripthash_getHistory(scriptHash);
+            if (history.length === 0) consecutiveEmpty++;
+            else consecutiveEmpty = 0;
+          }
+        } catch (e) {
+          consecutiveEmpty++;
+        }
+      }
+    }
+
+    // Use coinselect to pick optimal UTXOs
+    const targets = [{ address: receiver_address || allUtxos[0]?.address, value: Math.round(marsToZubrins(amount)) }];
+    const fee_rate = 1550;
+    let { inputs, outputs, fee } = coinSelect(allUtxos, targets, fee_rate);
+
+    if (!inputs || !outputs) {
+      return res.status(400).json({ error: "Insufficient funds across all addresses" });
+    }
+
+    res.json({ inputs, outputs, fee });
+  } catch (error) {
+    console.error("Multi-UTXO error:", error);
+    res.status(500).json({ error: "Multi-UTXO failed: " + error.message });
+  }
+});
+
+// =====================================================================
 // =====================================================================
 // =========================== Core Functions ==========================
 
@@ -321,6 +497,37 @@ const marsToZubrins = (MARS) => {
 };
 const zubrinToMars = (ZUBRIN) => {
   return ZUBRIN / 100000000;
+};
+
+// Pure JS crypto utilities for HD discovery (no OpenSSL dependency)
+const nobleHash = require("@noble/hashes/sha256");
+const nobleRipemd = require("@noble/hashes/ripemd160");
+const bs58checkLib = require("bs58check");
+
+// Pure JS hash160 (sha256 + ripemd160)
+const hash160Pure = (buffer) => {
+  const sha = nobleHash.sha256(Uint8Array.from(buffer));
+  return Buffer.from(nobleRipemd.ripemd160(sha));
+};
+
+// Pure JS p2pkh address from public key
+const pubkeyToAddressPure = (pubkey, versionByte = 0x32) => {
+  const h160 = hash160Pure(pubkey);
+  const payload = Buffer.concat([Buffer.from([versionByte]), h160]);
+  return bs58checkLib.encode(payload);
+};
+
+// Pure JS address to script hash for Electrum
+const addressToScriptHashPure = (address) => {
+  const decoded = bs58checkLib.decode(address);
+  const pubKeyHash = decoded.slice(1);
+  const script = Buffer.concat([
+    Buffer.from([0x76, 0xa9, 0x14]),
+    pubKeyHash,
+    Buffer.from([0x88, 0xac]),
+  ]);
+  const hash = nobleHash.sha256(Uint8Array.from(script));
+  return Buffer.from(hash).reverse().toString("hex");
 };
 
 // Given address return script hash
