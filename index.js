@@ -231,6 +231,59 @@ app.get("/api/mars/balance/", async (req, res) => {
 });
 
 // =====================================================================
+// Transaction History - get tx history for an address via Electrum
+// Returns format compatible with the explorer /api/txs/ response
+// =====================================================================
+app.get("/api/mars/txhistory/", async (req, res) => {
+  const address = req.query.address;
+  if (!address) {
+    return res.status(400).json({ error: "Required: address parameter" });
+  }
+
+  try {
+    const scriptHash = adddressToScriptHash(address);
+    // Get transaction history (list of tx hashes + heights)
+    const history = await marsecl.blockchainScripthash_getHistory(scriptHash);
+
+    if (!history || history.length === 0) {
+      return res.json({ totalItems: 0, txs: [] });
+    }
+
+    // Fetch full transaction details for each tx (limit to last 50)
+    const recent = history.slice(-50);
+    const txs = [];
+    for (const item of recent) {
+      try {
+        const rawTx = await marsecl.blockchainTransaction_get(item.tx_hash, true);
+        if (rawTx) {
+          // Add fee calculation
+          let totalIn = 0, totalOut = 0;
+          if (rawTx.vin) {
+            for (const vin of rawTx.vin) {
+              if (vin.value) totalIn += vin.value;
+            }
+          }
+          if (rawTx.vout) {
+            for (const vout of rawTx.vout) {
+              totalOut += parseFloat(vout.value || 0);
+            }
+          }
+          rawTx.fees = Math.max(0, totalIn - totalOut);
+          txs.push(rawTx);
+        }
+      } catch (txErr) {
+        console.error("Error fetching tx", item.tx_hash, txErr.message);
+      }
+    }
+
+    res.json({ totalItems: txs.length, txs: txs });
+  } catch (error) {
+    console.error("txhistory error:", error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// =====================================================================
 // HD Wallet Discovery - scan BIP44 derivation paths for all balances
 // Takes xpub (extended public key) - no private key needed
 // =====================================================================
