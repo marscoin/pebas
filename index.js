@@ -320,13 +320,18 @@ app.get("/api/mars/discover/", async (req, res) => {
           const balance = listUnspent.reduce((acc, utxo) => acc + utxo.value, 0);
           const balanceMars = zubrinToMars(balance);
 
+          // Get confirmed + unconfirmed balance
+          const fullBalance = await marsecl.blockchainScripthash_getBalance(scriptHash);
+          const unconfirmedMars = zubrinToMars(Math.abs(fullBalance.unconfirmed || 0));
+
           // Also check transaction history to detect used-but-empty addresses
           const history = await marsecl.blockchainScripthash_getHistory(scriptHash);
 
-          if (balance > 0 || history.length > 0) {
+          if (balance > 0 || history.length > 0 || unconfirmedMars > 0) {
             discovered.push({
               address,
               balance: balanceMars,
+              unconfirmed: unconfirmedMars,
               chain: chain === 0 ? "receiving" : "change",
               index,
               path: `m/44'/2'/0'/${chain}/${index}`,
@@ -354,8 +359,11 @@ app.get("/api/mars/discover/", async (req, res) => {
       } catch (e) { /* ignore */ }
     }
 
+    const totalUnconfirmed = discovered.reduce((acc, a) => acc + (a.unconfirmed || 0), 0);
+
     res.json({
       totalBalance,
+      totalUnconfirmed,
       totalReceived,
       addressCount: discovered.length,
       addresses: discovered,
