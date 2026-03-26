@@ -429,7 +429,7 @@ app.get("/api/mars/utxo-multi/", async (req, res) => {
 
     // Use coinselect to pick optimal UTXOs
     const targets = [{ address: receiver_address || allUtxos[0]?.address, value: Math.round(marsToZubrins(amount)) }];
-    const fee_rate = 1550;
+    const fee_rate = 10000; // ~0.02 MARS per tx - support the miners!
     let { inputs, outputs, fee } = coinSelect(allUtxos, targets, fee_rate);
 
     if (!inputs || !outputs) {
