@@ -34,20 +34,29 @@ const bitcoinController = require("bitcoinjs-lib");
 const coinSelect = require("coinselect");
 const ElectrumClient = require("electrum-client");
 
-// HD wallet discovery - use bip32 v4 with tiny-secp256k1 (pure JS, no OpenSSL)
+// HD wallet discovery - use bitcoinjs-lib's built-in bip32
+// This matches the client-side derivation exactly (one source of truth)
+// Requires Node 22+ for OpenSSL compatibility
 let bip32HD;
 try {
-  const tinysecp = require("tiny-secp256k1");
-  const { BIP32Factory } = require("bip32");
-  bip32HD = BIP32Factory(tinysecp);
-  // Smoke test
+  bip32HD = bitcoinController.bip32;
+  // Smoke test with known Marscoin tpub
   const testNode = bip32HD.fromBase58("tpubDDDjG8FYXe3UrKsCJeq5E4KBiEQ4KP8XjGbK79hmKBebFqH8p6Fzyu2zS1XVeXyczZ1Py4nvSAfKRpS2YGGbLvshozR8BqZwukgQdyFtcEM", Marscoin.mainnet);
   testNode.derive(0).derive(0);
-  console.log("✅ bip32HD initialized and smoke-tested OK");
+  const testAddr = bitcoinController.payments.p2pkh({ pubkey: testNode.derive(0).publicKey, network: Marscoin.mainnet }).address;
+  console.log("✅ bip32HD initialized (bitcoinjs-lib), smoke test addr:", testAddr);
 } catch(e) {
   console.error("❌ bip32HD init failed:", e.message);
-  console.error("   HD discovery endpoints will not work");
-  bip32HD = null;
+  console.error("   Falling back to BIP32Factory(tiny-secp256k1)");
+  try {
+    const tinysecp = require("tiny-secp256k1");
+    const { BIP32Factory } = require("bip32");
+    bip32HD = BIP32Factory(tinysecp);
+    console.log("⚠️  Using fallback bip32HD (tiny-secp256k1) - addresses may differ from client!");
+  } catch(e2) {
+    console.error("❌ Fallback also failed:", e2.message);
+    bip32HD = null;
+  }
 }
 const peers = require("electrum-host-parse")
   .getDefaultPeers("BitcoinSegwit")
@@ -311,7 +320,7 @@ app.get("/api/mars/discover/", async (req, res) => {
 
       for (let index = 0; consecutiveEmpty < gapLimit; index++) {
         const childNode = chainNode.derive(index);
-        const address = pubkeyToAddressPure(childNode.publicKey, Marscoin.mainnet.pubKeyHash);
+        const address = bitcoinController.payments.p2pkh({ pubkey: childNode.publicKey, network: Marscoin.mainnet }).address;
 
         try {
           const scriptHash = addressToScriptHashPure(address);
@@ -403,7 +412,7 @@ app.get("/api/mars/utxo-multi/", async (req, res) => {
 
       for (let index = 0; consecutiveEmpty < GAP_LIMIT; index++) {
         const childNode = chainNode.derive(index);
-        const address = pubkeyToAddressPure(childNode.publicKey, Marscoin.mainnet.pubKeyHash);
+        const address = bitcoinController.payments.p2pkh({ pubkey: childNode.publicKey, network: Marscoin.mainnet }).address;
 
         try {
           const scriptHash = addressToScriptHashPure(address);
