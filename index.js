@@ -119,14 +119,35 @@ mainMARS();
 
 
 
+let electrumHealthy = true;
+let reconnecting = false;
+
 setInterval(async function () {
+  if (reconnecting) return;
   try {
-    await marsecl.server_ping();
-    // console.log("Server's Active");
-  } catch (Exception) {
-    console.log(Exception);
+    const pingPromise = marsecl.server_ping();
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('ping timeout')), 4000));
+    await Promise.race([pingPromise, timeoutPromise]);
+    if (!electrumHealthy) {
+      console.log("✅ Electrum connection restored");
+      electrumHealthy = true;
+    }
+  } catch (err) {
+    console.log("⚠️ Electrum ping failed:", err.message || err);
+    electrumHealthy = false;
+    reconnecting = true;
+    try {
+      console.log("🔄 Attempting Electrum reconnection...");
+      await marsecl.close();
+      await connectElectrumClient(marsecl);
+      console.log("✅ Electrum reconnected successfully");
+      electrumHealthy = true;
+    } catch (reconnErr) {
+      console.error("❌ Electrum reconnection failed:", reconnErr.message);
+    }
+    reconnecting = false;
   }
-}, 5000);
+}, 10000);
 
 
 
