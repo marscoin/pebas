@@ -72,9 +72,9 @@ app.use(cookieParser());
 // ============================================================
 // AI Error Triage — sends 500 errors to OpenRouter for analysis
 // ============================================================
-const ERROR_TRIAGE_KEY = process.env.OPENROUTER_TRIAGE_KEY || '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';
+const ERROR_TRIAGE_KEY = process.env.OPENROUTER_TRIAGE_KEY || '';
 const ERROR_TRIAGE_EMAILS = (process.env.ERROR_TRIAGE_EMAILS || 'info@marscoin.org,novalis78@gmail.com').split(',');
-const RESEND_API_KEY = process.env.RESEND_API_KEY || 're_ViqCDxrA_NKhwgWF7Gda36rJSW6JvPzC7';
+const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
 const errorCooldowns = new Map();
 
 async function triageError(err, route, method = 'GET') {
