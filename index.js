@@ -68,11 +68,114 @@ app.use(cors({ origin: "*", methods: ['GET','POST','DELETE','UPDATE','PUT','PATC
 app.use(express.json());
 app.use(cookieParser());
 
+
+// ============================================================
+// AI Error Triage — sends 500 errors to OpenRouter for analysis
+// ============================================================
+const ERROR_TRIAGE_KEY = process.env.OPENROUTER_TRIAGE_KEY || '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';
+const ERROR_TRIAGE_EMAILS = (process.env.ERROR_TRIAGE_EMAILS || 'info@marscoin.org,novalis78@gmail.com').split(',');
+const RESEND_API_KEY = process.env.RESEND_API_KEY || 're_ViqCDxrA_NKhwgWF7Gda36rJSW6JvPzC7';
+const errorCooldowns = new Map();
+
+async function triageError(err, route, method = 'GET') {
+    const fingerprint = `${err.message}:${route}`;
+    const now = Date.now();
+    if (errorCooldowns.has(fingerprint) && now - errorCooldowns.get(fingerprint) < 15 * 60 * 1000) return;
+    errorCooldowns.set(fingerprint, now);
+
+    const prompt = `You are a senior Node.js developer triaging a 500 error on Pebas, the Marscoin blockchain API bridge (Express.js, Electrum client, marscoind RPC).
+Analyze and provide: 1) What happened (one sentence) 2) Likely cause 3) Suggested fix 4) Severity (Critical/High/Medium/Low). Under 150 words.
+
+ERROR: ${err.message}
+ROUTE: ${method} ${route}
+STACK: ${(err.stack || '').split('\n').slice(0, 10).join('\n')}
+TIME: ${new Date().toISOString()}`;
+
+    try {
+        const aiResp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + ERROR_TRIAGE_KEY, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://martianrepublic.org' },
+            body: JSON.stringify({ model: 'openrouter/auto', messages: [{ role: 'user', content: prompt }], max_tokens: 300, temperature: 0.3 }),
+        });
+        const aiData = await aiResp.json();
+        const analysis = aiData.choices?.[0]?.message?.content || 'AI triage unavailable';
+        const usedModel = aiData.model || 'openrouter/auto';
+
+        await fetch('https://api.resend.com/emails', {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + RESEND_API_KEY, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                from: 'Pebas Monitor <congress@martianrepublic.org>',
+                to: ERROR_TRIAGE_EMAILS,
+                subject: `[PEBAS] 500 Error: ${err.message.substring(0, 60)} — ${method} ${route}`,
+                html: `<div style="font-family:monospace;background:#06060c;color:#e4e4e7;padding:24px;border-radius:8px;">
+                    <h2 style="color:#ff4444;margin-top:0;">Pebas Error Alert</h2>
+                    <p><b>Route:</b> ${method} ${route}</p>
+                    <p><b>Error:</b> ${err.message}</p>
+                    <p><b>Time:</b> ${new Date().toISOString()}</p>
+                    <hr style="border-color:#333;">
+                    <h3 style="color:#00e4ff;">AI Triage (${usedModel})</h3>
+                    <pre style="white-space:pre-wrap;color:#d4d4d8;">${analysis}</pre>
+                </div>`,
+            }),
+        });
+        console.log('Error triage sent for:', route);
+    } catch (triageErr) {
+        console.error('Error triage failed:', triageErr.message);
+    }
+}
+
+// Express error-catching middleware (add after all routes)
+// Global error handler
+app.use((err, req, res, next) => {
+    console.error('Unhandled error:', err.message);
+    triageError(err, req.originalUrl, req.method);
+    res.status(500).json({ error: err.message });
+});
+
 app.listen(3001, () => {
   console.log("Running on port 3001 🚀");
 });
 
-// Electrum Clients Connection
+// ============================================================
+// Direct marscoind RPC — Primary communication channel
+// Eliminates Electrum dependency for critical operations
+// ============================================================
+const RPC_USER = 'marscoinrpcb';
+const RPC_PASS = 'DPFXH8vFxzzIAYSwHF1ZLpzS8RKjjoFhPjz4VW2Yo3DM8';
+const RPC_PORT = 8337;
+const RPC_HOST = '127.0.0.1';
+
+async function rpcCall(method, params = []) {
+  const body = JSON.stringify({
+    jsonrpc: '1.0',
+    id: Date.now(),
+    method: method,
+    params: params
+  });
+  try {
+    const resp = await fetch(`http://${RPC_HOST}:${RPC_PORT}/`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + Buffer.from(RPC_USER + ':' + RPC_PASS).toString('base64')
+      },
+      body: body
+    });
+    const data = await resp.json();
+    if (data.error) {
+      throw new Error(data.error.message || JSON.stringify(data.error));
+    }
+    return data.result;
+  } catch (err) {
+    console.error(`RPC ${method} failed:`, err.message);
+    throw err;
+  }
+}
+
+console.log("✅ Direct marscoind RPC configured on port", RPC_PORT);
+
+// Electrum Clients Connection (fallback)
 const marsecl = new ElectrumClient("50002", "147.182.177.23", "ssl");
 
 async function connectElectrumClient(client, maxRetries = 5, delay = 1000) {
@@ -214,10 +317,10 @@ app.all("/api/mars/broadcast/", async (req, res) => {
     res.send(result);
     return;
   } catch (error) {
-    console.error(error);
+    console.error("Broadcast error:", error.message || error);
+    res.status(500).json({ error: error.message || "Broadcast failed" });
+    return;
   }
-
-  return;
 });
 
 app.get("/api/mars/txdetails/", async (req, res) => {
@@ -510,7 +613,7 @@ const getTxHash = async (list_unspent, amount, receiver_address) => {
       value: amount,
     },
   ];
-  const fee_rate = 1550;
+  const fee_rate = 10000; // match main UTXO endpoint - feed the miners
 
   // loop through utxo's and format
   let formattedUtxos = [];
@@ -555,11 +658,25 @@ const getRawTx = async (tx) => {
 };
 
 const broadcastTx = async (hex) => {
-  if (!marsecl) throw new Error("Electrum client is not connected...");
-
-  const broadcast = await marsecl.blockchainTransaction_broadcast(hex);
-
-  return broadcast;
+  // Primary: Direct RPC to marscoind (most reliable, no middleman)
+  try {
+    const txid = await rpcCall('sendrawtransaction', [hex, 0]); // maxfeerate=0
+    console.log("✅ RPC broadcast success:", txid);
+    return txid;
+  } catch (rpcErr) {
+    console.error("RPC broadcast failed:", rpcErr.message);
+    // Fallback: try Electrum
+    try {
+      if (marsecl) {
+        const broadcast = await marsecl.blockchainTransaction_broadcast(hex);
+        console.log("⚠️ Electrum fallback broadcast:", broadcast);
+        return broadcast;
+      }
+    } catch (electrumErr) {
+      console.error("Electrum fallback also failed:", electrumErr.message);
+    }
+    throw new Error(rpcErr.message || "All broadcast methods failed");
+  }
 };
 
 const checkDetails = async (hex) => {
