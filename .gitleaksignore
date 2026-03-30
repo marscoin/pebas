@@ -1,0 +1,4 @@
+# Commit 8619646 contained API keys that were immediately revoked.
+# Keys removed in commit 6ff7302. Safe to ignore.
+8619646506cf0878e70a5168bd072c145808189e:index.js:generic-api-key
+8619646506cf0878e70a5168bd072c145808189e:index.js:resend-api-key
