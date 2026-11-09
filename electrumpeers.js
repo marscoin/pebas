@@ -1,6 +1,5 @@
 
 export const marscoinPeers = [
-    { host: "147.182.177.23", tcp: "50001" },
-    { host: "147.182.177.23", ssl: "50002" },
+    { host: "electrum.marscoin.org", tcp: "50001" },
+    { host: "electrum.marscoin.org", ssl: "50002" },
   ];
-

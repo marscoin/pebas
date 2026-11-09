@@ -137,12 +137,35 @@ app.listen(3001, () => {
   console.log("Running on port 3001 🚀");
 });
 
+// Reads KEY=value lines from the .env file beside this script into
+// process.env, without overriding anything already set.
+function loadPrivateEnv() {
+  try {
+    const fs = require("fs");
+    const path = require("path");
+    const file = path.join(path.dirname(new URL(import.meta.url).pathname), ".env");
+    for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+      const match = /^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/.exec(line);
+      if (match && process.env[match[1]] === undefined) process.env[match[1]] = match[2].replace(/^(['"])(.*)\1$/, "$2");
+    }
+  } catch (e) {
+    // No .env file: rely on the environment.
+  }
+}
+
 // ============================================================
 // Direct marscoind RPC — Primary communication channel
 // Eliminates Electrum dependency for critical operations
 // ============================================================
-const RPC_USER = 'marscoinrpcb';
-const RPC_PASS = 'DPFXH8vFxzzIAYSwHF1ZLpzS8RKjjoFhPjz4VW2Yo3DM8';
+// Credentials come from the environment (or the service's private .env
+// file), never from source: this repository is public.
+loadPrivateEnv();
+const RPC_USER = process.env.MARS_RPC_USER;
+const RPC_PASS = process.env.MARS_RPC_PASS;
+if (!RPC_USER || !RPC_PASS) {
+  console.error("❌ MARS_RPC_USER and MARS_RPC_PASS must be set (environment or .env).");
+  process.exit(1);
+}
 const RPC_PORT = 8337;
 const RPC_HOST = '127.0.0.1';
 
@@ -175,82 +198,84 @@ async function rpcCall(method, params = []) {
 
 console.log("✅ Direct marscoind RPC configured on port", RPC_PORT);
 
-// Electrum Clients Connection (fallback)
-const marsecl = new ElectrumClient("50002", "147.182.177.23", "ssl");
+// Electrum connection (fallback, and address history)
+//
+// Every call goes through electrumCall, which connects on demand, gives each
+// request a deadline, and throws the connection away after any failure so the
+// next request starts clean. Previously a lost connection left requests
+// waiting forever, and with them every HTTP request that depended on one.
+const ELECTRUM_SERVERS = (process.env.MARS_ELECTRUM_SERVERS || "electrum.marscoin.org:50002:ssl")
+  .split(",")
+  .map((entry) => {
+    const [host, port, protocol] = entry.trim().split(":");
+    return { host, port: port || "50002", protocol: protocol || "ssl" };
+  });
+const ELECTRUM_TIMEOUT_MS = 8000;
 
-async function connectElectrumClient(client, maxRetries = 5, delay = 1000) {
-  let retries = 0;
+let electrumClient = null;
+let electrumConnecting = null;
+let electrumServerIndex = 0;
 
-  async function attemptConnection() {
-    try {
-      await client.connect();
-      console.log("Successfully connected to Mars Electrum server.");
-
-      client.on('close', () => {
-        console.log("Connection to Mars Electrum server lost. Attempting to reconnect...");
-        setTimeout(reconnect, delay);
-      });
-    } catch (error) {
-      if (retries < maxRetries) {
-        retries++;
-        console.log(`Connection failed, retrying... (${retries}/${maxRetries})`);
-        setTimeout(attemptConnection, retries * delay);
-      } else {
-        console.log("Failed to connect to Mars Electrum server after several attempts.");
-        throw error;
-      }
-    }
-  }
-
-  async function reconnect() {
-    retries = 0; // Reset retry counter for a fresh start
-    attemptConnection();
-  }
-
-  await attemptConnection();
+function withDeadline(promise, what) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Electrum ${what} timed out`)), ELECTRUM_TIMEOUT_MS);
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
-const mainMARS = async () => {
+function dropElectrumClient(client) {
+  if (electrumClient === client) electrumClient = null;
   try {
-    await connectElectrumClient(marsecl);
+    client.close();
   } catch (e) {
-    console.error("Error connecting to MARS electrum:", e);
+    // Already closed.
   }
-};
+}
 
-mainMARS();
-
-
-
-let electrumHealthy = true;
-let reconnecting = false;
-
-setInterval(async function () {
-  if (reconnecting) return;
+async function connectElectrum() {
+  const server = ELECTRUM_SERVERS[electrumServerIndex % ELECTRUM_SERVERS.length];
+  const client = new ElectrumClient(server.port, server.host, server.protocol);
   try {
-    const pingPromise = marsecl.server_ping();
-    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('ping timeout')), 4000));
-    await Promise.race([pingPromise, timeoutPromise]);
-    if (!electrumHealthy) {
-      console.log("✅ Electrum connection restored");
-      electrumHealthy = true;
-    }
-  } catch (err) {
-    console.log("⚠️ Electrum ping failed:", err.message || err);
-    electrumHealthy = false;
-    reconnecting = true;
-    try {
-      console.log("🔄 Attempting Electrum reconnection...");
-      await marsecl.close();
-      await connectElectrumClient(marsecl);
-      console.log("✅ Electrum reconnected successfully");
-      electrumHealthy = true;
-    } catch (reconnErr) {
-      console.error("❌ Electrum reconnection failed:", reconnErr.message);
-    }
-    reconnecting = false;
+    await withDeadline(client.connect(), "connect");
+    await withDeadline(client.server_version("pebas", "1.4"), "handshake");
+  } catch (error) {
+    electrumServerIndex++; // try the next server, if there is one, next time
+    dropElectrumClient(client);
+    throw error;
   }
-}, 10000);
+  console.log(`Connected to Mars Electrum server ${server.host}:${server.port}.`);
+  electrumClient = client;
+  return client;
+}
+
+async function electrumCall(method, args) {
+  if (!electrumClient) {
+    electrumConnecting = electrumConnecting || connectElectrum().finally(() => (electrumConnecting = null));
+    await electrumConnecting;
+  }
+  const client = electrumClient;
+  try {
+    return await withDeadline(client[method](...args), method);
+  } catch (error) {
+    // A server's refusal of one request arrives as a plain object and leaves
+    // the connection usable; anything else means the connection is suspect.
+    if (error instanceof Error) dropElectrumClient(client);
+    throw error;
+  }
+}
+
+// The rest of this file calls marsecl.<method>(...) as before.
+const marsecl = new Proxy({}, { get: (_, method) => (...args) => electrumCall(method, args) });
+
+electrumCall("server_ping", []).catch((error) => console.error("Mars Electrum not reachable at startup:", error.message || error));
+
+// Keep the connection warm, and find out early when it has gone.
+setInterval(() => {
+  electrumCall("server_ping", []).catch((error) => console.log("⚠️ Electrum ping failed:", error.message || error));
+}, 30000);
 
 
 
